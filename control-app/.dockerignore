@@ -1,0 +1,7 @@
+**/node_modules
+**/.meteor/local
+Dockerfile
+.circleci
+deploy
+chart
+.dockerignore
