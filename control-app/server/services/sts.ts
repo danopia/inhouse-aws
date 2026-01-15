@@ -1,4 +1,7 @@
 import { Meteor } from "meteor/meteor";
+import { SessionsCollection } from "/imports/db/sessions";
+import { Random } from "meteor/random";
+import { check } from "meteor/check";
 
 export async function handleStsAction(reqParams: URLSearchParams, accountId: string, region: string) {
   switch (reqParams.get('Action')) {
@@ -12,8 +15,10 @@ export async function handleStsAction(reqParams: URLSearchParams, accountId: str
 
   case 'AssumeRoleWithWebIdentity':
     const RoleArn = reqParams.get('RoleArn');
+    check(RoleArn, String);
     const RoleSessionName = reqParams.get('RoleSessionName');
     const WebIdentityToken = reqParams.get('WebIdentityToken');
+    check(WebIdentityToken, String);
 
     // throw new Meteor.Error(`TODO`, `TODO: parse OIDC JWT`);
 
@@ -26,7 +31,7 @@ export async function handleStsAction(reqParams: URLSearchParams, accountId: str
       "sub": string; // "system:serviceaccount:my-namespace:my-sa"
       "kubernetes.io"?: {
         "namespace": string;
-        "pod": {
+        "pod"?: {
           "name": string;
           "uid": string;
         };
@@ -35,26 +40,51 @@ export async function handleStsAction(reqParams: URLSearchParams, accountId: str
           "uid": string;
         };
       };
-    } = JSON.parse(Buffer.from(WebIdentityToken!.split('.')[1], 'base64url').toString('utf-8'));
+    } = JSON.parse(Buffer.from(WebIdentityToken.split('.')[1], 'base64url').toString('utf-8'));
 
     if (oidcToken["kubernetes.io"]) {
       const kubeData = oidcToken["kubernetes.io"];
-      console.log(`Received kubernetes OIDC token from ${kubeData.namespace}/${kubeData.pod.name}`);
+      console.log(`Received kubernetes OIDC token from ${kubeData.namespace}/${kubeData.pod?.name}`);
+      const createdAt = new Date();
+      const expiresAt = new Date(createdAt.valueOf() + 15 * 60 * 1000);
+      const accountId = '123456123456'; // TODO
+      const signingSecret = Random.secret();
+      const sessionToken = Random.secret();
+      const userArn = `arn:aws:sts::${accountId}:assumed-role/${kubeData.namespace}/${kubeData.serviceaccount.name}`;
+      const accessKeyId = await SessionsCollection.insertAsync({
+        createdAt,
+        expiresAt,
+        accountId,
+        roleArn: RoleArn,
+        signingSecret,
+        sessionToken,
+        sessionName: RoleSessionName ?? 'none',
+        userArn,
+        jwt: {
+          sub: oidcToken.sub,
+          iss: oidcToken.iss,
+        },
+        kubernetes: {
+          namespace: oidcToken['kubernetes.io'].namespace,
+          podName: oidcToken['kubernetes.io'].pod?.name,
+          saName: oidcToken['kubernetes.io'].serviceaccount?.name,
+        },
+      });
       return `<Result>
       <AssumeRoleWithWebIdentityResult>
         <SubjectFromWebIdentityToken>${oidcToken.sub}</SubjectFromWebIdentityToken>
         <Audience>${oidcToken.aud}</Audience>
         <AssumedRoleUser>
-          <Arn>arn:aws:sts::123456123456:assumed-role/${kubeData.namespace}/${kubeData.serviceaccount.name}</Arn>
+          <Arn>${userArn}</Arn>
           <AssumedRoleId>${kubeData.namespace}:${kubeData.serviceaccount.uid}</AssumedRoleId>
         </AssumedRoleUser>
         <Credentials>
-          <AccessKeyId>K8S-${kubeData.pod.name}</AccessKeyId>
-          <SecretAccessKey>wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY</SecretAccessKey>
-          <SessionToken>-------------------------</SessionToken>
-          <Expiration>${new Date(Date.now() + 15 * 60 * 1000).toISOString()}</Expiration>
+          <AccessKeyId>${accessKeyId}</AccessKeyId>
+          <SecretAccessKey>${signingSecret}</SecretAccessKey>
+          <SessionToken>${sessionToken}</SessionToken>
+          <Expiration>${expiresAt.toISOString()}</Expiration>
         </Credentials>
-        <SourceIdentity>k8s/${kubeData.namespace}/${kubeData.pod.name}</SourceIdentity>
+        <SourceIdentity>k8s/${kubeData.namespace}/${kubeData.serviceaccount.name}</SourceIdentity>
         <Provider>www.amazon.com</Provider>
       </AssumeRoleWithWebIdentityResult></Result>`;
     }
