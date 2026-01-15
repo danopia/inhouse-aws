@@ -52,7 +52,7 @@ export const RecentQueueMessagesPage = () => {
 
   return (
     <div>
-      <h2>Queue Messages</h2>
+      <h2>Recent Queue Messages</h2>
       <table border={1}>
         <thead>
           <tr>

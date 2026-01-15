@@ -49,7 +49,7 @@ export async function handleStsAction(reqParams: URLSearchParams, accountId: str
           <AssumedRoleId>${kubeData.namespace}:${kubeData.serviceaccount.uid}</AssumedRoleId>
         </AssumedRoleUser>
         <Credentials>
-          <AccessKeyId>ASgeIAIOSFODNN7EXAMPLE</AccessKeyId>
+          <AccessKeyId>K8S-${kubeData.pod.name}</AccessKeyId>
           <SecretAccessKey>wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY</SecretAccessKey>
           <SessionToken>-------------------------</SessionToken>
           <Expiration>${new Date(Date.now() + 15 * 60 * 1000).toISOString()}</Expiration>

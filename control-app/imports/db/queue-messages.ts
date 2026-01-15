@@ -1,6 +1,7 @@
 import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
 import { Queue } from './queues';
+import { check } from 'meteor/check';
 
 export type QueueMessageAttribute = {
   dataType: 'String';
@@ -46,6 +47,8 @@ export async function sendQueueMessage(
   >>,
 ) {
   if (!message.body) throw new Meteor.Error(`no-body`, `body is required`);
+
+  check(message.delaySeconds, Number);
 
   if (queue.config.FifoQueue) {
     if (!message.groupId) throw new Meteor.Error(`fifo`,
@@ -101,6 +104,7 @@ export async function receiveQueueMessages(
   const availMessages = await QueueMessagesCollection.find({
     queueId: queue._id,
     visibleAfter: {$lt: new Date()},
+    lifecycle: {$ne: 'Deleted'},
   }, {
     sort: { visibleAfter: 1 },
     limit: Math.min(maxMessages, 10),

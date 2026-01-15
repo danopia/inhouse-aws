@@ -4,7 +4,7 @@ import { deleteQueueMessage, QueueMessagesCollection, receiveQueueMessages, send
 import { Queue, QueuesCollection } from "/imports/db/queues";
 import { extractMessageAttributes, extractParamArray } from "/imports/params";
 
-export async function handleSqsAction(reqParams: URLSearchParams, accountId: string, region: string) {
+export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId: string, region: string) {
   switch (reqParams.get('Action')) {
 
   case 'CreateQueue':
@@ -21,7 +21,7 @@ export async function handleSqsAction(reqParams: URLSearchParams, accountId: str
       "Policy": "{\"Version\":\"2012-10-17\"}",
       "ReceiveMessageWaitTimeSeconds": "0",
       "RedrivePolicy": "{}",
-      // "SqsManagedSseEnabled": "false",
+      "SqsManagedSseEnabled": "false",
       "VisibilityTimeout": "30",
     };
     for (let i = 1; reqParams.has(`Attribute.${i}.Name`); i++) {
@@ -56,6 +56,7 @@ export async function handleSqsAction(reqParams: URLSearchParams, accountId: str
       "VisibilityTimeout": parseInt(attributes['VisibilityTimeout']),
       "FifoQueue": attributes['FifoQueue'] == 'true',
       "ContentBasedDeduplication": attributes['ContentBasedDeduplication'] == 'true',
+      "SqsManagedSseEnabled": attributes['SqsManagedSseEnabled'] == 'true',
     };
 
     try {
@@ -127,7 +128,7 @@ export async function handleSqsAction(reqParams: URLSearchParams, accountId: str
       "MessageRetentionPeriod": `${latest.config.MessageRetentionPeriod}`,
       "ReceiveMessageWaitTimeSeconds": `${latest.config.ReceiveMessageWaitTimeSeconds}`,
       "VisibilityTimeout": `${latest.config.VisibilityTimeout}`,
-      // "SqsManagedSseEnabled": `${latest.config.SqsManagedSseEnabled}`,
+      "SqsManagedSseEnabled": `${latest.config.SqsManagedSseEnabled ?? false}`,
       "FifoQueue": `${latest.config.FifoQueue}`,
       "ContentBasedDeduplication": `${latest.config.ContentBasedDeduplication}`,
     };

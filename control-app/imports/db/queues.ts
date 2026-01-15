@@ -25,7 +25,7 @@ export interface Queue {
     "MaximumMessageSize": number;
     "MessageRetentionPeriod": number;
     "ReceiveMessageWaitTimeSeconds": number;
-    // "SqsManagedSseEnabled": boolean;
+    "SqsManagedSseEnabled": boolean;
     // KmsMasterKeyId
     // KmsDataKeyReusePeriodSeconds
     "VisibilityTimeout": number;

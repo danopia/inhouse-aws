@@ -251,6 +251,14 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
   }
 }
 
+TopicMessagesCollection.find({
+  undeliveredTo: { $exists: true, $ne: [] as any },
+}).observe({
+  added(msg) {
+    void tryDelivering(msg);
+  },
+})
+
 Meteor.setInterval(async () => {
   // TODO: this double delivers if servers overlap timers
   const msgs = await TopicMessagesCollection.find({
@@ -261,55 +269,59 @@ Meteor.setInterval(async () => {
   }).fetchAsync();
 
   for (const msg of msgs) {
-    const deliverResults = await Promise.allSettled(msg.undeliveredTo.map(async subId => {
-      const sub = await TopicSubscriptionsCollection.findOneAsync({ _id: subId });
-      if (!sub) throw new Meteor.Error('sub-not-found', `Sub doesn't exist`);
+    await tryDelivering(msg);
+  }
+}, 15000);
+
+async function tryDelivering(msg: TopicMessage) {
+  const deliverResults = await Promise.allSettled(msg.undeliveredTo.map(async subId => {
+    const sub = await TopicSubscriptionsCollection.findOneAsync({ _id: subId });
+    if (!sub) throw new Meteor.Error('sub-not-found', `Sub doesn't exist`);
 
 
-      switch (sub.endpoint.protocol) {
-        case 'sqs':
-          const queue = await QueuesCollection.findOneAsync({ _id: sub.endpoint.queueId });
-          if (!queue) throw new Meteor.Error('queue-not-found', `Queue doesn't exist`);
-          await sendQueueMessage(queue, {
-            attributes: msg.attributes,
-            dedupId: msg.dedupId,
-            groupId: msg.groupId,
-            body: sub.config.RawMessageDelivery ? msg.body : jsonifyMessage(msg),
-          });
-          // is this racy...?
-          await TopicMessagesCollection.updateAsync({
-            _id: msg._id,
-          }, {
-            $set: { modifiedAt: new Date },
-            $pull: { undeliveredTo: subId },
-            $push: { deliveredTo: subId },
-          });
-          return subId;
+    switch (sub.endpoint.protocol) {
+      case 'sqs':
+        const queue = await QueuesCollection.findOneAsync({ _id: sub.endpoint.queueId });
+        if (!queue) throw new Meteor.Error('queue-not-found', `Queue doesn't exist`);
+        await sendQueueMessage(queue, {
+          attributes: msg.attributes,
+          dedupId: msg.dedupId,
+          groupId: msg.groupId,
+          body: sub.config.RawMessageDelivery ? msg.body : jsonifyMessage(msg),
+        });
+        // is this racy...?
+        await TopicMessagesCollection.updateAsync({
+          _id: msg._id,
+        }, {
+          $set: { modifiedAt: new Date },
+          $pull: { undeliveredTo: subId },
+          $push: { deliveredTo: subId },
+        });
+        return subId;
 
-        default: throw new Meteor.Error('todo', `TODO: endpoint type ${sub.endpoint.protocol}`);
-      }
-    }));
-
-    for (const result of deliverResults) {
-      if (result.status == 'fulfilled') {
-        console.log('Delivered', msg._id, 'to', result.value);
-      } else {
-        console.warn(`Failed to deliver`, msg._id, ':', (result.reason as Error).message);
-      }
+      default: throw new Meteor.Error('todo', `TODO: endpoint type ${sub.endpoint.protocol}`);
     }
+  }));
 
-    if (deliverResults.every(x => x.status == 'fulfilled')) {
-      await TopicMessagesCollection.updateAsync({
-        _id: msg._id,
-      }, {
-        $set: {
-          modifiedAt: new Date,
-          lastDeliveredAt: new Date,
-        },
-      });
+  for (const result of deliverResults) {
+    if (result.status == 'fulfilled') {
+      console.log('Delivered', msg._id, 'to', result.value);
+    } else {
+      console.warn(`Failed to deliver`, msg._id, ':', (result.reason as Error).message);
     }
   }
-}, 5000);
+
+  if (deliverResults.every(x => x.status == 'fulfilled')) {
+    await TopicMessagesCollection.updateAsync({
+      _id: msg._id,
+    }, {
+      $set: {
+        modifiedAt: new Date,
+        lastDeliveredAt: new Date,
+      },
+    });
+  }
+}
 
 function jsonifyMessage(msg: TopicMessage) {
   return JSON.stringify({
