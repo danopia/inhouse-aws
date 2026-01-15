@@ -1,0 +1,32 @@
+{
+  "version": "5",
+  "remote": {
+    "https://deno.land/std@0.125.0/async/deadline.ts": "edbdf6cd7a5e3337c4c24c9b616491f8f1d61d36fc415d5d5b4af33557de0d23",
+    "https://deno.land/std@0.125.0/async/debounce.ts": "3cf9306b4e9038ee3238111e338f412ecf3541b1a97ba9fc1f960be8af5a5f39",
+    "https://deno.land/std@0.125.0/async/deferred.ts": "677692a2399d4cabbc45e06abe4f585afd6196c59e24a98edb866598af9f0eef",
+    "https://deno.land/std@0.125.0/async/delay.ts": "f38013c800f5129b14fdbf41fb4f4fbaf9525f69f4266946e14d0cf57c830b0c",
+    "https://deno.land/std@0.125.0/async/mod.ts": "a28709190a1966cb50e5815ef269bb588ee192373cde73b1096641820dc52a36",
+    "https://deno.land/std@0.125.0/async/mux_async_iterator.ts": "35561f258d32c77170f9d1faf3d650890fb6502d5fe12f505c050b4ea1aee899",
+    "https://deno.land/std@0.125.0/async/pool.ts": "97b0dd27c69544e374df857a40902e74e39532f226005543eabacb551e277082",
+    "https://deno.land/std@0.125.0/async/tee.ts": "518c7bfd5184c8cd92b47115026a6a2243e81d83e2c3e71c2aa5cdb5988998b1",
+    "https://deno.land/std@0.125.0/encoding/base64.ts": "784384e3cc39c59534d15f71e87f5b8da73cc5e1460417eb32ec9d62617d4f87",
+    "https://deno.land/std@0.125.0/http/server.ts": "10c3a7814666cdbabd6f9c18acdcc4593e222275a628280a4868881445fbb5bc",
+    "https://deno.land/x/kubernetes_admission@v0.1.0/admission-context.ts": "cced489d39efee3705d2dac7e0685f64a37627fe077b0d40a92593856496de69",
+    "https://deno.land/x/kubernetes_admission@v0.1.0/admission-handler.ts": "cda79fe242d27d53690c259af85e215b592d13c102331487e2b3d1af9ba650f5",
+    "https://deno.land/x/kubernetes_admission@v0.1.0/admission-review.ts": "cab656768487f48777dde25d1e24d6d2bd587e1e17f2038d9827940a68febe90",
+    "https://deno.land/x/kubernetes_admission@v0.1.0/deps.ts": "749181660f832e34cef95ff0f245ebaf8d80865bc3d2f1a0128c350849df217f",
+    "https://deno.land/x/kubernetes_admission@v0.1.0/file-watcher.ts": "979356d44f3c50b4a1c20c68b8685c168bf1ea64e42350eafe355a5831dadc57",
+    "https://deno.land/x/kubernetes_admission@v0.1.0/mod.ts": "3cb0e797cd0bf36157dbe78c787584f461c520b43fdd271eab20efd806e29848",
+    "https://deno.land/x/kubernetes_apis@v0.3.1/builtin/core@v1/structs.ts": "64beb05d76cd1ce9c7a08c4c0ccf456163bfeacb36b265287c23a125aa751d28",
+    "https://deno.land/x/kubernetes_apis@v0.3.1/builtin/meta@v1/structs.ts": "ceb686d00e74ff6970601953a95e6adc56fa76171406e493d65a6a195eadc41a",
+    "https://deno.land/x/kubernetes_apis@v0.3.1/common.ts": "74fb0e42bf652558c86e0450dbc71f768102a1fad918f3e4df33bb4e0adbf0de",
+    "https://deno.land/x/kubernetes_apis@v0.3.2/builtin/admissionregistration.k8s.io@v1/structs.ts": "b71f5cd6bce96138065459cfe8b417919a18b0d02d9db0606863db36ad1e00fb",
+    "https://deno.land/x/kubernetes_apis@v0.3.2/builtin/authentication.k8s.io@v1/structs.ts": "86b1889439842d249431e328f150cc78754233b3149461b67cee407aa3d64f2e",
+    "https://deno.land/x/kubernetes_apis@v0.3.2/builtin/meta@v1/structs.ts": "8b39daf6b6f4bee47573db02da8a745ecf98bc634c31ba8ab637b46e9c25f8a7",
+    "https://deno.land/x/kubernetes_apis@v0.3.2/common.ts": "24b92a00b971bb4628f78e606cba2ebecd9868352a53c2a9213ac65d376a919f",
+    "https://deno.land/x/kubernetes_client@v0.2.4/lib/contract.ts": "09d1ac34d8a0df21e132cd7ffc4572db8632fb1cc78d643a41603b11be75ed01",
+    "https://deno.land/x/kubernetes_client@v0.2.4/lib/stream-transformers.ts": "ba7919ab23d36cb3cc216037afd35b11850f45807ab6968a5ade3db2d70f82d9",
+    "https://deno.land/x/kubernetes_client@v0.3.2/lib/contract.ts": "09d1ac34d8a0df21e132cd7ffc4572db8632fb1cc78d643a41603b11be75ed01",
+    "https://deno.land/x/kubernetes_client@v0.3.2/lib/stream-transformers.ts": "ba7919ab23d36cb3cc216037afd35b11850f45807ab6968a5ade3db2d70f82d9"
+  }
+}
