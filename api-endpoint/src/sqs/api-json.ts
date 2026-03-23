@@ -24,11 +24,11 @@ import type {
 import {
   deleteQueueMessage,
   QueueMessagesCollection,
-  receiveQueueMessages,
   sendQueueMessage,
 } from "./db-messages.ts";
-import { Queue, QueuesCollection } from "./db-queues.ts";
+import { QueuesCollection } from "./db-queues.ts";
 import { ReqCtx, ServiceError } from "../shared.ts";
+import { receiveQueueMessages } from "./message-stream.ts";
 
 const extractMessageAttributesJson = (attributes: {
   [key: string]: MessageAttributeValue | null | undefined;
@@ -380,7 +380,7 @@ export async function handleSqsJsonAction(ctx: ReqCtx, action: string, reqBody: 
     // check(maxMsgs, Number);
     // check(maxSeconds, Number);
 
-    const messages = await waitForMessages(queue, maxMsgs, maxSeconds);
+    const messages = await receiveQueueMessages(queue, maxMsgs, maxSeconds);
 
     await QueuesCollection.updateOne({
       _id: queue._id,
@@ -466,68 +466,3 @@ export async function handleSqsJsonAction(ctx: ReqCtx, action: string, reqBody: 
     throw new ServiceError(`Unimplemented`, `Unimplemented: ${action}`);
   }
 }
-
-async function waitForMessages(queue: Queue, maxMsgs: number, maxSeconds: number) {
-  const returnAfter = new Date(Date.now() + (maxSeconds * 1000));
-
-  const firstTry = await receiveQueueMessages(queue, maxMsgs);
-  if (firstTry.length > 0) return firstTry;
-
-  while (returnAfter > new Date) {
-    const tryAgain = await receiveQueueMessages(queue, maxMsgs);
-    if (tryAgain.length > 0) return tryAgain;
-
-    await new Promise(ok => setTimeout(ok, 2000));
-  }
-
-  return [];
-}
-
-// Meteor.setInterval(async () => {
-//   const queues = new Map<string, {
-//     visible: number;
-//     invisible: number;
-//     delayed: number;
-//   }>();
-
-//   await QueueMessagesCollection.find({lifecycle: {$in: ['Waiting', 'Delivered']}}).forEachAsync(x => {
-//     let obj = queues.get(x.queueId);
-//     if (!obj) queues.set(x.queueId, obj = {
-//       visible: 0,
-//       invisible: 0,
-//       delayed: 0,
-//     });
-
-//     if (x.visibleAfter && x.visibleAfter?.valueOf() < Date.now()) {
-//       obj.visible++;
-//     } else if (x.lifecycle == 'Delivered') {
-//       obj.invisible++;
-//     } else {
-//       obj.delayed++;
-//     }
-//   });
-
-//   for (const [queueId, counts] of queues) {
-//     await QueuesCollection.updateOne({
-//       _id: queueId,
-//     }, {
-//       $set: {
-//         messagesActive: counts.delayed + counts.invisible + counts.visible,
-//         messagesVisible: counts.visible,
-//         messagesDelayed: counts.delayed,
-//         messagesNotVisible: counts.invisible,
-//       },
-//     });
-//   }
-
-//   await QueuesCollection.updateOne({
-//     _id: {$nin: Array.from(queues.keys())},
-//   }, {
-//     $set: {
-//       messagesActive: 0,
-//       messagesVisible: 0,
-//       messagesDelayed: 0,
-//       messagesNotVisible: 0,
-//      }
-//   }, { multi: true });
-// }, 10 * 1000);

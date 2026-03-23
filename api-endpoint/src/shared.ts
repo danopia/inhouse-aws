@@ -3,7 +3,7 @@ import { MongoClient } from "mongodb";
 
 export const mongoClient = await new MongoClient(
   Deno.env.get('MONGO_URL')
-    ?? 'mongodb://127.0.0.1:3001/meteor?directConnection=true&serverSelectionTimeoutMS=2000&appName=mongosh+2.8.1').connect();
+    ?? 'mongodb://127.0.0.1:3001/meteor').connect();
 // export const mongoClient = new MongoClient("mongodb://127.0.0.1:27017");
 
 export const mongoDb = mongoClient.db();

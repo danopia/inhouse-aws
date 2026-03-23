@@ -1,0 +1,7 @@
+{
+  "workspace": [
+    "api-endpoint",
+    "control-app",
+    "kubernetes-webhook"
+  ]
+}

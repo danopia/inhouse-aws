@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { ReqCtx, ServiceError } from "../shared.ts";
-import { deleteQueueMessage, QueueMessagesCollection, receiveQueueMessages, sendQueueMessage } from "./db-messages.ts";
+import { deleteQueueMessage, sendQueueMessage } from "./db-messages.ts";
 import { extractMessageAttributes, extractParamArray } from "../params.ts";
-import { QueuesCollection, Queue } from "./db-queues.ts";
+import { QueuesCollection } from "./db-queues.ts";
+import { receiveQueueMessages } from "./message-stream.ts";
 
 export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchParams) {
   switch (reqParams.get('Action')) {
@@ -101,7 +102,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
   //       [`attributes.${reqParams.get('AttributeName')}`]: reqParams.get('AttributeValue'),
   //     },
   //   });
-  //   if (matched < 1) throw new ServiceError(404, 'no-queue');
+  //   if (matched < 1) throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
   //   return `<Result />`;
 
   case 'GetQueueAttributes': {
@@ -111,7 +112,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
       accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new ServiceError(404, 'no-queue');
+    if (!latest) throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
 
     const attributes = {
       "QueueArn": latest._id,
@@ -159,7 +160,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
       accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new ServiceError(404, 'no-queue');
+    if (!latest) throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
     return `<Result><ListQueueTagsResult>
     ${Object.entries(latest.tags).map(pair => `<Tag>
       <Key>${pair[0]}</Key>
@@ -181,7 +182,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
     }, {
       $set: sets,
     });
-    if (!happened) throw new ServiceError(404, 'no-queue');
+    if (!happened) throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
     return `<Result><TagQueueResult /></Result>`;
   }
 
@@ -199,7 +200,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
   //   const happened = await QueuesCollection.removeAsync({
   //     _id: reqParams.get('TopicArn')!,
   //   });
-  //   if (!happened) throw new ServiceError(404, 'no-queue');
+  //   if (!happened) throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
   //   return `<Result><DeleteTopicResult /></Result>`;
 
 
@@ -215,7 +216,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
       accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new ServiceError(404, 'no-queue');
+    if (!latest) throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
 
     const { messageId } = await sendQueueMessage(latest, {
       body: reqParams.get('MessageBody'),
@@ -240,7 +241,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
       accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new ServiceError(404, 'no-queue');
+    if (!latest) throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
 
     const results = new Array<string>;
     for (const params of extractParamArray(reqParams, 'SendMessageBatchRequestEntry.', '.Id')) {
@@ -287,7 +288,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
     if (!queue) {
       // Avoid thundering herd when no queues exist
       await new Promise(ok => setTimeout(ok, 5000 + Math.round(Math.random() * 5000)));
-      throw new ServiceError(404, 'no-queue');
+      throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
     }
 
     const maxMsgs = parseInt(
@@ -297,7 +298,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
       reqParams.get('WaitTimeSeconds')
       ?? `${queue.config.ReceiveMessageWaitTimeSeconds}`);
 
-    const messages = await waitForMessages(queue, maxMsgs, maxSeconds);
+    const messages = await receiveQueueMessages(queue, maxMsgs, maxSeconds);
 
     await QueuesCollection.updateOne({
       _id: queue._id,
@@ -352,7 +353,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
       accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!queue) throw new ServiceError(404, 'no-queue');
+    if (!queue) throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
 
     await deleteQueueMessage(queue, reqParams.get('ReceiptHandle')!);
     return '<Response />';
@@ -365,7 +366,7 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
       accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!queue) throw new ServiceError(404, 'no-queue');
+    if (!queue) throw new ServiceError('QueueDoesNotExist', 'Queue with the given name was not found.');
 
     const results = new Array<string>;
     for (const params of extractParamArray(reqParams, 'DeleteMessageBatchRequestEntry.', '.Id')) {
@@ -396,72 +397,6 @@ export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchPara
     throw new ServiceError(`Unimplemented`, `Unimplemented: ${reqParams.get('Action')}`);
   }
 }
-
-async function waitForMessages(queue: Queue, maxMsgs: number, maxSeconds: number) {
-  const returnAfter = new Date(Date.now() + (maxSeconds * 1000));
-
-  const firstTry = await receiveQueueMessages(queue, maxMsgs);
-  if (firstTry.length > 0) return firstTry;
-
-  while (returnAfter > new Date) {
-    const tryAgain = await receiveQueueMessages(queue, maxMsgs);
-    if (tryAgain.length > 0) return tryAgain;
-
-    await new Promise(ok => setTimeout(ok, 2000));
-  }
-
-  return [];
-}
-
-setInterval(async () => {
-  const queues = new Map<string, {
-    visible: number;
-    invisible: number;
-    delayed: number;
-  }>();
-
-  for await (const x of QueueMessagesCollection.find({lifecycle: {$in: ['Waiting', 'Delivered']}})) {
-    let obj = queues.get(x.queueId);
-    if (!obj) queues.set(x.queueId, obj = {
-      visible: 0,
-      invisible: 0,
-      delayed: 0,
-    });
-
-    if (x.visibleAfter && x.visibleAfter?.valueOf() < Date.now()) {
-      obj.visible++;
-    } else if (x.lifecycle == 'Delivered') {
-      obj.invisible++;
-    } else {
-      obj.delayed++;
-    }
-  }
-
-  for (const [queueId, counts] of queues) {
-    await QueuesCollection.updateOne({
-      _id: queueId,
-    }, {
-      $set: {
-        messagesActive: counts.delayed + counts.invisible + counts.visible,
-        messagesVisible: counts.visible,
-        messagesDelayed: counts.delayed,
-        messagesNotVisible: counts.invisible,
-      },
-    });
-  }
-
-  await QueuesCollection.updateMany({
-    _id: {$nin: Array.from(queues.keys())},
-  }, {
-    $set: {
-      messagesActive: 0,
-      messagesVisible: 0,
-      messagesDelayed: 0,
-      messagesNotVisible: 0,
-     }
-  });
-}, 10 * 1000);
-
 
 
 function escapeForXml(string: string, ignore?: string) {
