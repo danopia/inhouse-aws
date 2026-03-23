@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@cloudydeno/ddp": "jsr:@cloudydeno/ddp@~0.1",
+    "mongodb": "npm:mongodb@^7"
+  }
+}

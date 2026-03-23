@@ -1,14 +1,14 @@
-import { Meteor } from "meteor/meteor";
 import { createHash } from 'node:crypto';
-import { deleteQueueMessage, QueueMessagesCollection, receiveQueueMessages, sendQueueMessage } from "/imports/db/queue-messages";
-import { Queue, QueuesCollection } from "/imports/db/queues";
-import { extractMessageAttributes, extractParamArray } from "/imports/params";
+import { ReqCtx, ServiceError } from "../shared.ts";
+import { deleteQueueMessage, QueueMessagesCollection, receiveQueueMessages, sendQueueMessage } from "./db-messages.ts";
+import { extractMessageAttributes, extractParamArray } from "../params.ts";
+import { QueuesCollection, Queue } from "./db-queues.ts";
 
-export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId: string, region: string) {
+export async function handleSqsQueryAction(ctx: ReqCtx, reqParams: URLSearchParams) {
   switch (reqParams.get('Action')) {
 
-  case 'CreateQueue':
-    const arn = `arn:aws:sqs:${region}:${accountId}:${reqParams.get('QueueName')}`;
+  case 'CreateQueue': {
+    const arn = `arn:aws:sqs:${ctx.region}:${ctx.auth.accountId}:${reqParams.get('QueueName')}`;
     const attributes = {
       "FifoQueue": "false",
       "ContentBasedDeduplication": "false",
@@ -27,7 +27,7 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
     for (let i = 1; reqParams.has(`Attribute.${i}.Name`); i++) {
       const name = reqParams.get(`Attribute.${i}.Name`);
       const value = reqParams.get(`Attribute.${i}.Value`);
-      if (!name || !(name in attributes)) throw new Meteor.Error(`unimpl`,
+      if (!name || !(name in attributes)) throw new ServiceError(`unimpl`,
         `Queue attribute ${name} not supported`);
       (attributes as Record<string,string>)[name] = `${value}`;
     }
@@ -38,11 +38,11 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
 
     const isNamedFifo = arn.endsWith('.fifo');
     if (isNamedFifo !== (attributes['FifoQueue'] == 'true')) {
-      throw new Meteor.Error(`InvalidFifoQueue`,
+      throw new ServiceError(`InvalidFifoQueue`,
         `Is "${reqParams.get('QueueName')}" fifo? You said "${attributes['FifoQueue']}"`);
     }
     if (!isNamedFifo && attributes['ContentBasedDeduplication'] !== 'false') {
-      throw new Meteor.Error(`InvalidFifoQueue`,
+      throw new ServiceError(`InvalidFifoQueue`,
         `Is "${reqParams.get('QueueName')}" not fifo? You wanted it to have ContentBasedDeduplication`);
     }
 
@@ -60,11 +60,10 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
     };
 
     try {
-      await QueuesCollection.insertAsync({
+      await QueuesCollection.insertOne({
         _id: arn,
-        region,
-        accountId,
-
+        region: ctx.region,
+        accountId: ctx.auth.accountId,
         messagesActive: 0,
         messagesVisible: 0,
         messagesDelayed: 0,
@@ -78,22 +77,23 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
       });
     } catch (err) {
       if ((err as {code?: number}).code == 11000) {
-        const existingQueue = await QueuesCollection.findOneAsync({_id: arn});
+        const existingQueue = await QueuesCollection.findOne({_id: arn});
         if (!existingQueue) throw new Error('what? false creation conflict?');
         // check that everything the user wants is the right value
         for (const [key, intendedVal] of Object.entries(intendedConfig)) {
           if ((existingQueue.config as Record<string,unknown>)[key] !== intendedVal) {
-            throw new Meteor.Error('QueueAlreadyExists', `This queue already exists with a different value for ${key}`);
+            throw new ServiceError('QueueAlreadyExists', `This queue already exists with a different value for ${key}`);
           }
         }
         // it's ok, we can be idempotent
       } else throw err;
     }
 
-    return `<Result><CreateQueueResult><QueueUrl>https://sqs.${region}.amazonaws.com/${accountId}/${reqParams.get('QueueName')!}</QueueUrl></CreateQueueResult></Result>`;
+    return `<Result><CreateQueueResult><QueueUrl>https://sqs.${ctx.region}.amazonaws.com/${ctx.auth.accountId}/${reqParams.get('QueueName')!}</QueueUrl></CreateQueueResult></Result>`;
+  }
 
   // case 'SetTopicAttributes':
-  //   const matched = await QueuesCollection.updateAsync({
+  //   const matched = await QueuesCollection.updateOne({
   //     _id: reqParams.get('TopicArn')!,
   //   }, {
   //     // TODO: unset if no value
@@ -101,16 +101,17 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
   //       [`attributes.${reqParams.get('AttributeName')}`]: reqParams.get('AttributeValue'),
   //     },
   //   });
-  //   if (matched < 1) throw new Meteor.Error(404, 'no-queue');
+  //   if (matched < 1) throw new ServiceError(404, 'no-queue');
   //   return `<Result />`;
 
   case 'GetQueueAttributes': {
     const queueName = reqParams.get('QueueUrl')!.split('/').slice(-1)[0];
-    const latest = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const latest = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new Meteor.Error(404, 'no-queue');
+    if (!latest) throw new ServiceError(404, 'no-queue');
 
     const attributes = {
       "QueueArn": latest._id,
@@ -141,7 +142,7 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
         break;
       } else if (attributeName in attributes) {
         (desiredAttributes as Record<string,string>)[attributeName] = (attributes as Record<string,string>)[attributeName];
-      } else throw new Meteor.Error(`unimpl`, `Unknown attribute ${attributeName}`)
+      } else throw new ServiceError(`unimpl`, `Unknown attribute ${attributeName}`)
     }
 
     return `<Result><GetQueueAttributesResult>
@@ -153,11 +154,12 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
 
   case 'ListQueueTags': {
     const queueName = reqParams.get('QueueUrl')!.split('/').slice(-1)[0];
-    const latest = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const latest = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new Meteor.Error(404, 'no-queue');
+    if (!latest) throw new ServiceError(404, 'no-queue');
     return `<Result><ListQueueTagsResult>
     ${Object.entries(latest.tags).map(pair => `<Tag>
       <Key>${pair[0]}</Key>
@@ -172,22 +174,24 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
       sets[`tags.${reqParams.get(`Tag.${i}.Key`)}`] = reqParams.get(`Tag.${i}.Value`)!;
     }
 
-    const happened = await QueuesCollection.updateAsync({
-      region, accountId,
+    const happened = await QueuesCollection.updateOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     }, {
       $set: sets,
     });
-    if (!happened) throw new Meteor.Error(404, 'no-queue');
+    if (!happened) throw new ServiceError(404, 'no-queue');
     return `<Result><TagQueueResult /></Result>`;
   }
 
   case 'ListQueues': {
     const queues = await QueuesCollection.find({
-      region, accountId,
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
     }, {
       sort: {name: 1},
-    }).fetchAsync();
+    }).toArray();
     return `<Result><ListQueuesResult>${queues.map(x => `<QueueUrl>https://sqs.${x.region}.amazonaws.com/${x.accountId}/${x.name}</QueueUrl>`).join('\n')}</ListQueuesResult></Result>`;
   }
 
@@ -195,7 +199,7 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
   //   const happened = await QueuesCollection.removeAsync({
   //     _id: reqParams.get('TopicArn')!,
   //   });
-  //   if (!happened) throw new Meteor.Error(404, 'no-queue');
+  //   if (!happened) throw new ServiceError(404, 'no-queue');
   //   return `<Result><DeleteTopicResult /></Result>`;
 
 
@@ -206,11 +210,12 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
 
   case 'SendMessage': {
     const queueName = reqParams.get('QueueUrl')!.split('/').slice(-1)[0];
-    const latest = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const latest = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new Meteor.Error(404, 'no-queue');
+    if (!latest) throw new ServiceError(404, 'no-queue');
 
     const { messageId } = await sendQueueMessage(latest, {
       body: reqParams.get('MessageBody'),
@@ -230,11 +235,12 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
 
   case 'SendMessageBatch': {
     const queueName = reqParams.get('QueueUrl')!.split('/').slice(-1)[0];
-    const latest = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const latest = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new Meteor.Error(404, 'no-queue');
+    if (!latest) throw new ServiceError(404, 'no-queue');
 
     const results = new Array<string>;
     for (const params of extractParamArray(reqParams, 'SendMessageBatchRequestEntry.', '.Id')) {
@@ -256,7 +262,7 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
             <MD5OfMessageBody>${bodyMd5Hex}</MD5OfMessageBody>
           </SendMessageBatchResultEntry>`);
       } catch (err) {
-        if (!(err instanceof Meteor.Error)) throw err;
+        if (!(err instanceof ServiceError)) throw err;
         results.push(`
           <BatchResultErrorEntry>
             <Id>${msgId}</Id>
@@ -273,14 +279,15 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
 
   case 'ReceiveMessage': {
     const queueName = reqParams.get('QueueUrl')!.split('/').slice(-1)[0];
-    const queue = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const queue = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
     if (!queue) {
       // Avoid thundering herd when no queues exist
       await new Promise(ok => setTimeout(ok, 5000 + Math.round(Math.random() * 5000)));
-      throw new Meteor.Error(404, 'no-queue');
+      throw new ServiceError(404, 'no-queue');
     }
 
     const maxMsgs = parseInt(
@@ -292,7 +299,7 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
 
     const messages = await waitForMessages(queue, maxMsgs, maxSeconds);
 
-    await QueuesCollection.updateAsync({
+    await QueuesCollection.updateOne({
       _id: queue._id,
     }, {
       $set: {
@@ -340,11 +347,12 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
 
   case 'DeleteMessage': {
     const queueName = reqParams.get('QueueUrl')!.split('/').slice(-1)[0];
-    const queue = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const queue = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!queue) throw new Meteor.Error(404, 'no-queue');
+    if (!queue) throw new ServiceError(404, 'no-queue');
 
     await deleteQueueMessage(queue, reqParams.get('ReceiptHandle')!);
     return '<Response />';
@@ -352,11 +360,12 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
 
   case 'DeleteMessageBatch': {
     const queueName = reqParams.get('QueueUrl')!.split('/').slice(-1)[0];
-    const queue = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const queue = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!queue) throw new Meteor.Error(404, 'no-queue');
+    if (!queue) throw new ServiceError(404, 'no-queue');
 
     const results = new Array<string>;
     for (const params of extractParamArray(reqParams, 'DeleteMessageBatchRequestEntry.', '.Id')) {
@@ -368,7 +377,7 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
             <Id>${msgId}</Id>
           </BatchResultErrorEntry>`);
       } catch (err) {
-        if (!(err instanceof Meteor.Error)) throw err;
+        if (!(err instanceof ServiceError)) throw err;
         results.push(`
           <DeleteMessageBatchResultEntry>
             <Id>${msgId}</Id>
@@ -384,7 +393,7 @@ export async function handleSqsQueryAction(reqParams: URLSearchParams, accountId
 
 
   default:
-    throw new Meteor.Error(`Unimplemented`, `Unimplemented: ${reqParams.get('Action')}`);
+    throw new ServiceError(`Unimplemented`, `Unimplemented: ${reqParams.get('Action')}`);
   }
 }
 
@@ -404,14 +413,14 @@ async function waitForMessages(queue: Queue, maxMsgs: number, maxSeconds: number
   return [];
 }
 
-Meteor.setInterval(async () => {
+setInterval(async () => {
   const queues = new Map<string, {
     visible: number;
     invisible: number;
     delayed: number;
   }>();
 
-  await QueueMessagesCollection.find({lifecycle: {$in: ['Waiting', 'Delivered']}}).forEachAsync(x => {
+  for await (const x of QueueMessagesCollection.find({lifecycle: {$in: ['Waiting', 'Delivered']}})) {
     let obj = queues.get(x.queueId);
     if (!obj) queues.set(x.queueId, obj = {
       visible: 0,
@@ -426,10 +435,10 @@ Meteor.setInterval(async () => {
     } else {
       obj.delayed++;
     }
-  });
+  }
 
   for (const [queueId, counts] of queues) {
-    await QueuesCollection.updateAsync({
+    await QueuesCollection.updateOne({
       _id: queueId,
     }, {
       $set: {
@@ -441,7 +450,7 @@ Meteor.setInterval(async () => {
     });
   }
 
-  await QueuesCollection.updateAsync({
+  await QueuesCollection.updateMany({
     _id: {$nin: Array.from(queues.keys())},
   }, {
     $set: {
@@ -450,22 +459,18 @@ Meteor.setInterval(async () => {
       messagesDelayed: 0,
       messagesNotVisible: 0,
      }
-  }, { multi: true });
+  });
 }, 10 * 1000);
 
 
 
 function escapeForXml(string: string, ignore?: string) {
-  var pattern;
-
   if (string === null || string === undefined) return;
-
   ignore = (ignore || '').replace(/[^&"<>\']/g, '');
-  pattern = '([&"<>\'])'.replace(new RegExp('[' + ignore + ']', 'g'), '');
-
+  const pattern = '([&"<>\'])'.replace(new RegExp('[' + ignore + ']', 'g'), '');
   return string.replace(new RegExp(pattern, 'g'), (_, item)  => escapeMap[item] ?? item);
 }
-var escapeMap: Record<string,string|undefined> = {
+const escapeMap: Record<string,string|undefined> = {
   '>': '&gt;',
   '<': '&lt;',
   "'": '&apos;',

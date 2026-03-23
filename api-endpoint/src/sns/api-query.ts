@@ -1,17 +1,16 @@
-import { Meteor } from "meteor/meteor";
-import { Random } from "meteor/random";
-import { sendQueueMessage } from "/imports/db/queue-messages";
-import { QueuesCollection } from "/imports/db/queues";
-import { TopicSubscriptionsCollection } from "../../imports/db/topic-subscriptions";
-import { sendTopicMessage, TopicMessage, TopicMessagesCollection } from "/imports/db/topic-messages";
-import { TopicsCollection } from "/imports/db/topics";
-import { extractMessageAttributes, extractParamArray } from "/imports/params";
+import { extractMessageAttributes, extractParamArray } from "../params.ts";
+import { random, ReqCtx, ServiceError } from "../shared.ts";
+import { sendQueueMessage } from "../sqs/db-messages.ts";
+import { QueuesCollection } from "../sqs/db-queues.ts";
+import { sendTopicMessage, TopicMessage, TopicMessagesCollection } from "./db-messages.ts";
+import { TopicSubscriptionsCollection } from "./db-subscriptions.ts";
+import { TopicsCollection } from "./db-topics.ts";
 
-export async function handleSnsAction(reqParams: URLSearchParams, accountId: string, region: string): Promise<string> {
+export async function handleSnsAction(ctx: ReqCtx, reqParams: URLSearchParams): Promise<string> {
   switch (reqParams.get('Action')) {
 
-  case 'CreateTopic':
-    const arn = `arn:aws:sns:${region}:${accountId}:${reqParams.get('Name')}`;
+  case 'CreateTopic': {
+    const arn = `arn:aws:sns:${ctx.region}:${ctx.auth.accountId}:${reqParams.get('Name')}`;
     const attributes: Record<string,string> = {};
     for (let i = 1; reqParams.has(`Attributes.entry.${i}.key`); i++) {
       attributes[reqParams.get(`Attributes.entry.${i}.key`)!] = reqParams.get(`Attributes.entry.${i}.value`)!;
@@ -22,13 +21,13 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
     }
 
     const isNamedFifo = arn.endsWith('.fifo');
-    if (isNamedFifo !== (attributes['FifoTopic'] == 'true')) throw new Meteor.Error(`InvalidFifoTopic`,
+    if (isNamedFifo !== (attributes['FifoTopic'] == 'true')) throw new ServiceError(`InvalidFifoTopic`,
       `Is "${reqParams.get('Name')}" fifo? You said "${attributes['FifoTopic']}"`);
 
-    await TopicsCollection.insertAsync({
+    await TopicsCollection.insertOne({
       _id: arn,
-      region,
-      accountId,
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       createdAt: new Date,
       modifiedAt: new Date,
       name: reqParams.get('Name')!,
@@ -48,8 +47,9 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
       },
     });
     return `<Result><CreateTopicResult><TopicArn>${arn}</TopicArn></CreateTopicResult></Result>`;
+  }
 
-  case 'SetTopicAttributes':
+  case 'SetTopicAttributes': {
     const attrName = reqParams.get('AttributeName')!;
     const attrValue = reqParams.get('AttributeValue');
 
@@ -58,22 +58,23 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
       change[`config.${attrName}`] = attrValue!;
     } else if (['LambdaSuccessFeedbackSampleRate', 'FirehoseSuccessFeedbackSampleRate', 'SQSSuccessFeedbackSampleRate', 'HTTPSuccessFeedbackSampleRate', 'ApplicationSuccessFeedbackSampleRate', 'ContentBasedDeduplication'].includes(attrName)) {
       change[`config.${attrName}`] = `${attrValue}`;
-    } else throw new Meteor.Error(`unimpl`, `Can't set ${attrName} on topic`);
+    } else throw new ServiceError(`unimpl`, `Can't set ${attrName} on topic`);
 
-    const matched = await TopicsCollection.updateAsync({
+    const matched = await TopicsCollection.updateOne({
       _id: reqParams.get('TopicArn')!,
     }, {
       // TODO: unset if no value
       $set: change,
     });
-    if (matched < 1) throw new Meteor.Error(404, 'no-topic');
+    if (matched.matchedCount < 1) throw new ServiceError(404, 'no-topic');
     return `<Result />`;
+  }
 
-  case 'GetTopicAttributes':
-    const latest = await TopicsCollection.findOneAsync({
+  case 'GetTopicAttributes': {
+    const latest = await TopicsCollection.findOne({
       _id: reqParams.get('TopicArn')!,
     });
-    if (!latest) throw new Meteor.Error(404, 'no-topic');
+    if (!latest) throw new ServiceError(404, 'no-topic');
 
     const allAttrs = {
       "TopicArn": latest._id,
@@ -100,36 +101,39 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
       <key>${pair[0]}</key>
       <value>${pair[1]}</value>
     </entry>`).join('\n')}</Attributes></GetTopicAttributesResult></Result>`;
+  }
 
-  case 'ListTagsForResource':
-    const latest2 = await TopicsCollection.findOneAsync({
+  case 'ListTagsForResource': {
+    const latest2 = await TopicsCollection.findOne({
       _id: reqParams.get('ResourceArn')!,
     });
-    if (!latest2) throw new Meteor.Error(404, 'no-topic');
+    if (!latest2) throw new ServiceError(404, 'no-topic');
     return `<Result><ListTagsForResourceResult>        <Tags>
     ${Object.entries(latest2.tags).map(pair => `<member>
       <Key>${pair[0]}</Key>
       <Value>${pair[1]}</Value>
     </member>`).join('\n')}</Tags></ListTagsForResourceResult></Result>`;
+  }
 
-  case 'DeleteTopic':
-    const happened = await TopicsCollection.removeAsync({
+  case 'DeleteTopic': {
+    const happened = await TopicsCollection.deleteOne({
       _id: reqParams.get('TopicArn')!,
     });
-    if (!happened) throw new Meteor.Error(404, 'no-topic');
+    if (!happened) throw new ServiceError(404, 'no-topic');
     return `<Result><DeleteTopicResult /></Result>`;
+  }
 
-  case 'Subscribe':
-    const topic = await TopicsCollection.findOneAsync({_id: reqParams.get('TopicArn')!});
-    if (!topic) throw new Meteor.Error(404, 'no-topic');
-    if (reqParams.get('Protocol') !== 'sqs') throw new Meteor.Error(`unimpl`,
+  case 'Subscribe': {
+    const topic = await TopicsCollection.findOne({_id: reqParams.get('TopicArn')!});
+    if (!topic) throw new ServiceError(404, 'no-topic');
+    if (reqParams.get('Protocol') !== 'sqs') throw new ServiceError(`unimpl`,
       `Protocol ${reqParams.get('Protocol')} not implemented`);
-    const queue = await QueuesCollection.findOneAsync({_id: reqParams.get('Endpoint')!});
-    if (!queue) throw new Meteor.Error(404, 'no-queue');
-    const subId = await TopicSubscriptionsCollection.insertAsync({
-      _id: `${topic._id}:${Random.id()}`,
+    const queue = await QueuesCollection.findOne({_id: reqParams.get('Endpoint')!});
+    if (!queue) throw new ServiceError(404, 'no-queue');
+    const subId = await TopicSubscriptionsCollection.insertOne({
+      _id: `${topic._id}:${random.id()}`,
       topicId: topic._id,
-      accountId,
+      accountId: ctx.auth.accountId,
       createdAt: new Date,
       modifiedAt: new Date,
       endpoint: {
@@ -144,10 +148,11 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
       },
     });
     return `<Result><SubscribeResult><SubscriptionArn>${subId}</SubscriptionArn></SubscribeResult></Result>`;
+  }
 
   case 'GetSubscriptionAttributes': {
-    const sub = await TopicSubscriptionsCollection.findOneAsync({_id: reqParams.get('SubscriptionArn')!});
-    if (!sub) throw new Meteor.Error(404, 'no-sub');
+    const sub = await TopicSubscriptionsCollection.findOne({_id: reqParams.get('SubscriptionArn')!});
+    if (!sub) throw new ServiceError(404, 'no-sub');
     const allAttrs = {
       "Owner": sub.accountId,
       "RawMessageDelivery": `${sub.config.RawMessageDelivery}`,
@@ -168,10 +173,11 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
 
   case 'ListTopics': {
     const topics = await TopicsCollection.find({
-      region, accountId,
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
     }, {
       sort: {name: 1},
-    }).fetchAsync();
+    }).toArray();
     return `<Result><ListTopicsResult><Topics>${topics.map(x => `
       <member><TopicArn>${x._id}</TopicArn></member>`
     ).join('\n')}
@@ -184,10 +190,10 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
   // data plane
 
   case 'Publish': {
-    const topic = await TopicsCollection.findOneAsync({
+    const topic = await TopicsCollection.findOne({
       _id: reqParams.get('TopicArn')!.replace('000000000000', '123456123456'), // TODO: handle account ID better
     });
-    if (!topic) throw new Meteor.Error(404, 'no-topic');
+    if (!topic) throw new ServiceError(404, 'no-topic');
 
     const { messageId } = await sendTopicMessage(topic, {
       body: reqParams.get('Message'),
@@ -201,10 +207,10 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
   }
 
   case 'PublishBatch': {
-    const topic = await TopicsCollection.findOneAsync({
+    const topic = await TopicsCollection.findOne({
       _id: reqParams.get('TopicArn')!,
     });
-    if (!topic) throw new Meteor.Error(404, 'no-topic');
+    if (!topic) throw new ServiceError(404, 'no-topic');
 
     const Successful = new Array<string>;
     const Failed = new Array<string>;
@@ -225,7 +231,7 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
             <MD5OfMessageBody>0e024d309850c78cba5eabbeff7cae71</MD5OfMessageBody>
           </member>`);
       } catch (err) {
-        if (!(err instanceof Meteor.Error)) throw err;
+        if (!(err instanceof ServiceError)) throw err;
         Failed.push(`
           <member>
             <Id>${msgId}</Id>
@@ -247,26 +253,27 @@ export async function handleSnsAction(reqParams: URLSearchParams, accountId: str
 
 
   default:
-    throw new Meteor.Error(`Unimplemented`, `Unimplemented`);
+    throw new ServiceError(`Unimplemented`, `Unimplemented`);
   }
 }
 
-TopicMessagesCollection.find({
-  undeliveredTo: { $exists: true, $ne: [] as any },
-}).observe({
-  added(msg) {
-    void tryDelivering(msg);
-  },
-})
+// TODO: better
+// TopicMessagesCollection.find({
+//   undeliveredTo: { $exists: true, $ne: [] as any },
+// }).observe({
+//   added(msg) {
+//     void tryDelivering(msg);
+//   },
+// })
 
-Meteor.setInterval(async () => {
+setInterval(async () => {
   // TODO: this double delivers if servers overlap timers
   const msgs = await TopicMessagesCollection.find({
-    undeliveredTo: { $exists: true, $ne: [] as any },
+    undeliveredTo: { $exists: true, $ne: [] },
   }, {
     sort: { createdAt: -1 },
     limit: 10,
-  }).fetchAsync();
+  }).toArray();
 
   for (const msg of msgs) {
     await tryDelivering(msg);
@@ -275,14 +282,14 @@ Meteor.setInterval(async () => {
 
 async function tryDelivering(msg: TopicMessage) {
   const deliverResults = await Promise.allSettled(msg.undeliveredTo.map(async subId => {
-    const sub = await TopicSubscriptionsCollection.findOneAsync({ _id: subId });
-    if (!sub) throw new Meteor.Error('sub-not-found', `Sub doesn't exist`);
+    const sub = await TopicSubscriptionsCollection.findOne({ _id: subId });
+    if (!sub) throw new ServiceError('sub-not-found', `Sub doesn't exist`);
 
 
     switch (sub.endpoint.protocol) {
-      case 'sqs':
-        const queue = await QueuesCollection.findOneAsync({ _id: sub.endpoint.queueId });
-        if (!queue) throw new Meteor.Error('queue-not-found', `Queue doesn't exist`);
+      case 'sqs': {
+        const queue = await QueuesCollection.findOne({ _id: sub.endpoint.queueId });
+        if (!queue) throw new ServiceError('queue-not-found', `Queue doesn't exist`);
         await sendQueueMessage(queue, {
           attributes: msg.attributes,
           dedupId: msg.dedupId,
@@ -290,7 +297,7 @@ async function tryDelivering(msg: TopicMessage) {
           body: sub.config.RawMessageDelivery ? msg.body : jsonifyMessage(msg),
         });
         // is this racy...?
-        await TopicMessagesCollection.updateAsync({
+        await TopicMessagesCollection.updateOne({
           _id: msg._id,
         }, {
           $set: { modifiedAt: new Date },
@@ -298,8 +305,9 @@ async function tryDelivering(msg: TopicMessage) {
           $push: { deliveredTo: subId },
         });
         return subId;
+      }
 
-      default: throw new Meteor.Error('todo', `TODO: endpoint type ${sub.endpoint.protocol}`);
+      default: throw new ServiceError('todo', `TODO: endpoint type ${sub.endpoint.protocol}`);
     }
   }));
 
@@ -312,7 +320,7 @@ async function tryDelivering(msg: TopicMessage) {
   }
 
   if (deliverResults.every(x => x.status == 'fulfilled')) {
-    await TopicMessagesCollection.updateAsync({
+    await TopicMessagesCollection.updateOne({
       _id: msg._id,
     }, {
       $set: {

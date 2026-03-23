@@ -4,7 +4,6 @@ import { check } from 'meteor/check';
 import { QueuesCollection } from '/imports/db/queues';
 import { TopicsCollection } from '/imports/db/topics';
 
-import './service-apis';
 import { QueueMessagesCollection } from '/imports/db/queue-messages';
 
 Meteor.publish(null, () => [

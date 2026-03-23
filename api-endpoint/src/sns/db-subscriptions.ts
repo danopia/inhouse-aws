@@ -1,4 +1,4 @@
-import { Mongo } from 'meteor/mongo';
+import { mongoDb } from "../shared.ts";
 
 export interface TopicSubscription {
   _id: string;
@@ -22,4 +22,4 @@ export interface TopicSubscription {
   };
 }
 
-export const TopicSubscriptionsCollection = new Mongo.Collection<TopicSubscription>('sns-TopicSubscriptions');
+export const TopicSubscriptionsCollection = mongoDb.collection<TopicSubscription>('sns-TopicSubscriptions');

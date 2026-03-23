@@ -1,4 +1,4 @@
-import { Mongo } from 'meteor/mongo';
+import { mongoDb } from "../shared.ts";
 
 export interface Queue {
   _id: string;
@@ -36,4 +36,4 @@ export interface Queue {
   };
 }
 
-export const QueuesCollection = new Mongo.Collection<Queue>('sqs-Queues');
+export const QueuesCollection = mongoDb.collection<Queue>('sqs-Queues');

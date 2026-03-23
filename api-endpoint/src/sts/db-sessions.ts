@@ -1,4 +1,4 @@
-import { Mongo } from 'meteor/mongo';
+import { mongoDb } from "../shared.ts";
 
 export interface Session {
   _id: string;
@@ -25,4 +25,4 @@ export interface Session {
 
 }
 
-export const SessionsCollection = new Mongo.Collection<Session>('sts-Sessions');
+export const SessionsCollection = mongoDb.collection<Session>('sts-Sessions');

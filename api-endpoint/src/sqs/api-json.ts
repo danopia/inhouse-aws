@@ -1,8 +1,4 @@
-import { Meteor } from "meteor/meteor";
-import { check } from "meteor/check";
 import { createHash } from 'node:crypto';
-import { deleteQueueMessage, QueueMessagesCollection, receiveQueueMessages, sendQueueMessage } from "/imports/db/queue-messages";
-import { Queue, QueuesCollection } from "/imports/db/queues";
 
 import type {
   CreateQueueRequest,
@@ -24,7 +20,15 @@ import type {
   SendMessageRequest,
   SendMessageResult,
   TagQueueRequest,
-} from "./sqs-json-types";
+} from "./api-types.ts";
+import {
+  deleteQueueMessage,
+  QueueMessagesCollection,
+  receiveQueueMessages,
+  sendQueueMessage,
+} from "./db-messages.ts";
+import { Queue, QueuesCollection } from "./db-queues.ts";
+import { ReqCtx, ServiceError } from "../shared.ts";
 
 const extractMessageAttributesJson = (attributes: {
   [key: string]: MessageAttributeValue | null | undefined;
@@ -41,23 +45,23 @@ const extractMessageAttributesJson = (attributes: {
         case 'Binary':
           return [name, {
             dataType: 'Binary' as const,
-            value: Buffer.from(data![`BinaryValue`] as string, 'base64'),
+            value: Uint8Array.fromBase64(data![`BinaryValue`] as string),
           }];
-        default: throw new Meteor.Error(`unimpl`, `TODO: attribute data type ${dataType}`);
+        default: throw new ServiceError(`unimpl`, `TODO: attribute data type ${dataType}`);
       }
     }));
 
 
 // https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_DeleteMessageBatch.html
 
-export async function handleSqsJsonAction(action: string, reqBody: string, accountId: string, region: string) {
+export async function handleSqsJsonAction(ctx: ReqCtx, action: string, reqBody: string) {
   const rawRequest = JSON.parse(reqBody);
   switch (action) {
 
   case 'CreateQueue': {
     const reqParams = rawRequest as CreateQueueRequest;
 
-    const arn = `arn:aws:sqs:${region}:${accountId}:${reqParams['QueueName']}`;
+    const arn = `arn:aws:sqs:${ctx.region}:${ctx.auth.accountId}:${reqParams['QueueName']}`;
     const attributes = {
       "FifoQueue": "false",
       "ContentBasedDeduplication": "false",
@@ -74,7 +78,7 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
       "VisibilityTimeout": "30",
     };
     for (const [name, value] of Object.entries(reqParams['Attributes'] ?? [])) {
-      if (!name || !(name in attributes)) throw new Meteor.Error(`unimpl`,
+      if (!name || !(name in attributes)) throw new ServiceError(`unimpl`,
         `Queue attribute ${name} not supported`);
       (attributes as Record<string,string>)[name] = `${value}`;
     }
@@ -85,11 +89,11 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
 
     const isNamedFifo = arn.endsWith('.fifo');
     if (isNamedFifo !== (attributes['FifoQueue'] == 'true')) {
-      throw new Meteor.Error(`InvalidFifoQueue`,
+      throw new ServiceError(`InvalidFifoQueue`,
         `Is "${reqParams['QueueName']}" fifo? You said "${attributes['FifoQueue']}"`);
     }
     if (!isNamedFifo && attributes['ContentBasedDeduplication'] !== 'false') {
-      throw new Meteor.Error(`InvalidFifoQueue`,
+      throw new ServiceError(`InvalidFifoQueue`,
         `Is "${reqParams['QueueName']}" not fifo? You wanted it to have ContentBasedDeduplication`);
     }
 
@@ -107,10 +111,10 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
     };
 
     try {
-      await QueuesCollection.insertAsync({
+      await QueuesCollection.insertOne({
         _id: arn,
-        region,
-        accountId,
+        region: ctx.region,
+        accountId: ctx.auth.accountId,
 
         messagesActive: 0,
         messagesVisible: 0,
@@ -125,12 +129,12 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
       });
     } catch (err) {
       if ((err as {code?: number}).code == 11000) {
-        const existingQueue = await QueuesCollection.findOneAsync({_id: arn});
+        const existingQueue = await QueuesCollection.findOne({_id: arn});
         if (!existingQueue) throw new Error('what? false creation conflict?');
         // check that everything the user wants is the right value
         for (const [key, intendedVal] of Object.entries(intendedConfig)) {
           if ((existingQueue.config as Record<string,unknown>)[key] !== intendedVal) {
-            throw new Meteor.Error('QueueAlreadyExists', `This queue already exists with a different value for ${key}`);
+            throw new ServiceError('QueueAlreadyExists', `This queue already exists with a different value for ${key}`);
           }
         }
         // it's ok, we can be idempotent
@@ -138,12 +142,12 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
     }
 
     return JSON.stringify({
-      QueueUrl: `https://sqs.${region}.amazonaws.com/${accountId}/${reqParams['QueueName']!}`,
+      QueueUrl: `https://sqs.${ctx.region}.amazonaws.com/${ctx.auth.accountId}/${reqParams['QueueName']!}`,
     });
   }
 
   // case 'SetTopicAttributes':
-  //   const matched = await QueuesCollection.updateAsync({
+  //   const matched = await QueuesCollection.updateOne({
   //     _id: reqParams['TopicArn']!,
   //   }, {
   //     // TODO: unset if no value
@@ -151,17 +155,18 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
   //       [`attributes.${reqParams['AttributeName']}`]: reqParams['AttributeValue'],
   //     },
   //   });
-  //   if (matched < 1) throw new Meteor.Error(404, 'no-queue');
+  //   if (matched < 1) throw new ServiceError(404, 'no-queue');
   //   return `<Result />`;
 
   case 'GetQueueAttributes': {
     const reqParams = rawRequest as GetQueueAttributesRequest;
     const queueName = reqParams['QueueUrl']!.split('/').slice(-1)[0];
-    const latest = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const latest = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new Meteor.Error(404, 'no-queue');
+    if (!latest) throw new ServiceError(404, 'no-queue');
 
     const attributes = {
       "QueueArn": latest._id,
@@ -192,7 +197,7 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
         break;
       } else if (attributeName in attributes) {
         (desiredAttributes as Record<string,string>)[attributeName] = (attributes as Record<string,string>)[attributeName];
-      } else throw new Meteor.Error(`unimpl`, `Unknown attribute ${attributeName}`)
+      } else throw new ServiceError(`unimpl`, `Unknown attribute ${attributeName}`)
     }
 
     return JSON.stringify({
@@ -203,11 +208,12 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
   case 'ListQueueTags': {
     const reqParams = rawRequest as ListQueueTagsRequest;
     const queueName = reqParams['QueueUrl']!.split('/').slice(-1)[0];
-    const latest = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const latest = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new Meteor.Error(404, 'no-queue');
+    if (!latest) throw new ServiceError(404, 'no-queue');
 
     return JSON.stringify({
       Tags: latest.tags,
@@ -224,13 +230,14 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
       sets[key] = `${value}`;
     }
 
-    const happened = await QueuesCollection.updateAsync({
-      region, accountId,
+    const happened = await QueuesCollection.updateOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     }, {
       $set: sets,
     });
-    if (!happened) throw new Meteor.Error(404, 'no-queue');
+    if (!happened) throw new ServiceError(404, 'no-queue');
 
     return JSON.stringify({});
   }
@@ -239,11 +246,12 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
     const reqParams = rawRequest as ListQueuesRequest;
 
     const queues = await QueuesCollection.find({
-      region, accountId,
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
     }, {
       sort: {name: 1},
       limit: reqParams.MaxResults ?? 1000,
-    }).fetchAsync();
+    }).toArray();
 
     return JSON.stringify({
       QueueUrls: queues.map(x => `https://sqs.${x.region}.amazonaws.com/${x.accountId}/${x.name}`),
@@ -254,16 +262,17 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
     const reqParams = rawRequest as DeleteQueueRequest;
 
     const queueName = reqParams['QueueUrl']!.split('/').slice(-1)[0];
-    const queue = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const queue = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!queue) throw new Meteor.Error(404, 'no-queue');
+    if (!queue) throw new ServiceError(404, 'no-queue');
 
-    await QueueMessagesCollection.removeAsync({
+    await QueueMessagesCollection.deleteOne({
       queueId: queue._id,
     })
-    await QueuesCollection.removeAsync({
+    await QueuesCollection.deleteOne({
       _id: queue._id,
     });
 
@@ -279,11 +288,12 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
     const reqParams = rawRequest as SendMessageRequest;
 
     const queueName = reqParams['QueueUrl'].split('/').slice(-1)[0];
-    const latest = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const latest = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new Meteor.Error(404, 'no-queue');
+    if (!latest) throw new ServiceError(404, 'no-queue');
 
     const { messageId } = await sendQueueMessage(latest, {
       body: reqParams['MessageBody'],
@@ -298,7 +308,7 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
 
     return JSON.stringify({
       MD5OfMessageBody: bodyMd5Hex,
-      MessageId: messageId,
+      MessageId: messageId.insertedId,
     } satisfies SendMessageResult);
   }
 
@@ -306,11 +316,12 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
     const reqParams = rawRequest as SendMessageBatchRequest;
 
     const queueName = reqParams['QueueUrl']!.split('/').slice(-1)[0];
-    const latest = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const latest = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!latest) throw new Meteor.Error(404, 'no-queue');
+    if (!latest) throw new ServiceError(404, 'no-queue');
 
     const resultsJson: SendMessageBatchResult = {
       Successful: [],
@@ -331,11 +342,11 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
         });
         resultsJson.Successful.push({
           Id: msgId,
-          MessageId: messageId,
+          MessageId: messageId.insertedId,
           MD5OfMessageBody: bodyMd5Hex,
         });
       } catch (err) {
-        if (!(err instanceof Meteor.Error)) throw err;
+        if (!(err instanceof ServiceError)) throw err;
         resultsJson.Failed.push({
           Id: msgId,
           Code: `${err.error}`,
@@ -353,24 +364,25 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
     const reqParams = rawRequest as ReceiveMessageRequest;
 
     const queueName = reqParams['QueueUrl']!.split('/').slice(-1)[0];
-    const queue = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const queue = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
     if (!queue) {
       // Avoid thundering herd when no queues exist
       await new Promise(ok => setTimeout(ok, 5000 + Math.round(Math.random() * 5000)));
-      throw new Meteor.Error(404, 'no-queue');
+      throw new ServiceError(404, 'no-queue');
     }
 
     const maxMsgs = reqParams['MaxNumberOfMessages'] ?? 1;
     const maxSeconds = reqParams['WaitTimeSeconds'] ?? queue.config.ReceiveMessageWaitTimeSeconds;
-    check(maxMsgs, Number);
-    check(maxSeconds, Number);
+    // check(maxMsgs, Number);
+    // check(maxSeconds, Number);
 
     const messages = await waitForMessages(queue, maxMsgs, maxSeconds);
 
-    await QueuesCollection.updateAsync({
+    await QueuesCollection.updateOne({
       _id: queue._id,
     }, {
       $set: {
@@ -402,11 +414,12 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
     const reqParams = rawRequest as DeleteMessageRequest;
 
     const queueName = reqParams['QueueUrl']!.split('/').slice(-1)[0];
-    const queue = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const queue = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!queue) throw new Meteor.Error(404, 'no-queue');
+    if (!queue) throw new ServiceError(404, 'no-queue');
 
     await deleteQueueMessage(queue, reqParams['ReceiptHandle']!);
 
@@ -417,11 +430,12 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
     const reqParams = rawRequest as DeleteMessageBatchRequest;
 
     const queueName = reqParams['QueueUrl']!.split('/').slice(-1)[0];
-    const queue = await QueuesCollection.findOneAsync({
-      region, accountId,
+    const queue = await QueuesCollection.findOne({
+      region: ctx.region,
+      accountId: ctx.auth.accountId,
       name: queueName,
     });
-    if (!queue) throw new Meteor.Error(404, 'no-queue');
+    if (!queue) throw new ServiceError(404, 'no-queue');
 
     const resultsJson: DeleteMessageBatchResult = {
       Successful: [],
@@ -434,7 +448,7 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
         await deleteQueueMessage(queue, params['ReceiptHandle']);
         resultsJson.Successful.push({Id: msgId});
       } catch (err) {
-        if (!(err instanceof Meteor.Error)) throw err;
+        if (!(err instanceof ServiceError)) throw err;
         resultsJson.Failed.push({
           Id: msgId,
           SenderFault: true,
@@ -449,7 +463,7 @@ export async function handleSqsJsonAction(action: string, reqBody: string, accou
 
 
   default:
-    throw new Meteor.Error(`Unimplemented`, `Unimplemented: ${action}`);
+    throw new ServiceError(`Unimplemented`, `Unimplemented: ${action}`);
   }
 }
 
@@ -494,7 +508,7 @@ async function waitForMessages(queue: Queue, maxMsgs: number, maxSeconds: number
 //   });
 
 //   for (const [queueId, counts] of queues) {
-//     await QueuesCollection.updateAsync({
+//     await QueuesCollection.updateOne({
 //       _id: queueId,
 //     }, {
 //       $set: {
@@ -506,7 +520,7 @@ async function waitForMessages(queue: Queue, maxMsgs: number, maxSeconds: number
 //     });
 //   }
 
-//   await QueuesCollection.updateAsync({
+//   await QueuesCollection.updateOne({
 //     _id: {$nin: Array.from(queues.keys())},
 //   }, {
 //     $set: {

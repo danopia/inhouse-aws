@@ -1,7 +1,6 @@
-import { Meteor } from 'meteor/meteor';
-import { Mongo } from 'meteor/mongo';
-import { Queue } from './queues';
-import { check } from 'meteor/check';
+import { mongoDb, random, ServiceError } from "../shared.ts";
+import { Queue } from "./db-queues.ts";
+
 
 export type QueueMessageAttribute = {
   dataType: 'String';
@@ -32,7 +31,7 @@ export interface QueueMessage {
   systemAttributes: Record<string, QueueMessageAttribute>;
 }
 
-export const QueueMessagesCollection = new Mongo.Collection<QueueMessage>('sqs-QueueMessages');
+export const QueueMessagesCollection = mongoDb.collection<QueueMessage>('sqs-QueueMessages');
 
 export async function sendQueueMessage(
   queue: Queue,
@@ -46,18 +45,17 @@ export async function sendQueueMessage(
     | 'systemAttributes'
   >>,
 ) {
-  if (!message.body) throw new Meteor.Error(`no-body`, `body is required`);
+  if (!message.body) throw new ServiceError(`validation`, `body is required`);
 
-  check(message.delaySeconds, Number);
+  // check(message.delaySeconds, Number);
 
   if (queue.config.FifoQueue) {
-    if (!message.groupId) throw new Meteor.Error(`fifo`,
-      `This is a fifo queue`);
+    if (!message.groupId) throw new ServiceError(`fifo`, `This is a fifo queue`);
     // TODO: ContentBasedDeduplication doesn't seem to set properly
-    // if (queue.config.ContentBasedDeduplication && !message.dedupId) throw new Meteor.Error(`fifo`,
+    // if (queue.config.ContentBasedDeduplication && !message.dedupId) throw new ServiceError(`fifo`,
     //   `This fifo queue requires a MessageDeduplicationId because ContentBasedDeduplication is not set`);
   } else {
-    if (message.groupId || message.dedupId) throw new Meteor.Error(`fifo`, `Is not a fifo queue`);
+    if (message.groupId || message.dedupId) throw new ServiceError(`fifo`, `Is not a fifo queue`);
   }
 
   // TODO: check that systemAttrs only has AWSTraceHeader if anything
@@ -84,7 +82,8 @@ export async function insertQueueMessage(
     | 'queueId' | 'dedupId' | 'groupId' | 'body' | 'delaySeconds' | 'attributes' | 'systemAttributes'
   >,
 ) {
-  return await QueueMessagesCollection.insertAsync({
+  return await QueueMessagesCollection.insertOne({
+    _id: random.id(),
     ...opts,
     createdAt: new Date,
     modifiedAt: new Date,
@@ -108,13 +107,13 @@ export async function receiveQueueMessages(
   }, {
     sort: { visibleAfter: 1 },
     limit: Math.min(maxMessages, 10),
-  }).fetchAsync();
+  }).toArray();
 
   const delivarables: Array<QueueMessage> = [];
   // update in loop because lack of https://feedback.mongodb.com/forums/924280-database/suggestions/46072024-how-to-limit-the-number-of-document-updates
   for (const msg of availMessages) {
     console.log('Considering delivering', msg._id);
-    if (await QueueMessagesCollection.updateAsync({
+    if (await QueueMessagesCollection.updateOne({
       _id: msg._id,
       lifecycle: msg.lifecycle,
       lastDeliveredAt: msg.lastDeliveredAt,
@@ -138,7 +137,7 @@ export async function receiveQueueMessages(
 export async function deleteQueueMessage(queue: Queue, handle: string) {
   const [msgId, receives] = handle.split('/');
 
-  const hit = await QueueMessagesCollection.updateAsync({
+  const hit = await QueueMessagesCollection.updateOne({
     _id: msgId,
     queueId: queue._id,
     totalDeliveries: parseInt(receives)+1,
@@ -154,6 +153,6 @@ export async function deleteQueueMessage(queue: Queue, handle: string) {
     },
   });
 
-  if (!hit) throw new Meteor.Error(`ReceiptHandleIsInvalid`,
+  if (!hit) throw new ServiceError(`ReceiptHandleIsInvalid`,
     `Failed to find deletable message.`);
 }

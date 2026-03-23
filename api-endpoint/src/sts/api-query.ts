@@ -1,24 +1,22 @@
-import { Meteor } from "meteor/meteor";
-import { SessionsCollection } from "/imports/db/sessions";
-import { Random } from "meteor/random";
-import { check } from "meteor/check";
+import { random, ReqCtx, ServiceError } from "../shared.ts";
+import { SessionsCollection } from "./db-sessions.ts";
 
-export async function handleStsAction(reqParams: URLSearchParams, accountId: string, region: string) {
+export async function handleStsAction(ctx: ReqCtx, reqParams: URLSearchParams) {
   switch (reqParams.get('Action')) {
 
   case 'GetCallerIdentity':
     return `<Result><GetCallerIdentityResult>
       <UserId>UserId</UserId>
-      <Account>${accountId}</Account>
+      <Account>${ctx.auth.accountId}</Account>
       <Arn>Arn</Arn>
     </GetCallerIdentityResult></Result>`;
 
-  case 'AssumeRoleWithWebIdentity':
+  case 'AssumeRoleWithWebIdentity': {
     const RoleArn = reqParams.get('RoleArn');
-    check(RoleArn, String);
+    // check(RoleArn, String);
     const RoleSessionName = reqParams.get('RoleSessionName');
     const WebIdentityToken = reqParams.get('WebIdentityToken');
-    check(WebIdentityToken, String);
+    // check(WebIdentityToken, String);
 
     // throw new Meteor.Error(`TODO`, `TODO: parse OIDC JWT`);
 
@@ -40,7 +38,7 @@ export async function handleStsAction(reqParams: URLSearchParams, accountId: str
           "uid": string;
         };
       };
-    } = JSON.parse(Buffer.from(WebIdentityToken.split('.')[1], 'base64url').toString('utf-8'));
+    } = JSON.parse(new TextDecoder().decode(Uint8Array.fromBase64(WebIdentityToken!.split('.')[1], { alphabet: 'base64url'})));
 
     if (oidcToken["kubernetes.io"]) {
       const kubeData = oidcToken["kubernetes.io"];
@@ -48,14 +46,15 @@ export async function handleStsAction(reqParams: URLSearchParams, accountId: str
       const createdAt = new Date();
       const expiresAt = new Date(createdAt.valueOf() + 15 * 60 * 1000);
       const accountId = '123456123456'; // TODO
-      const signingSecret = Random.secret();
-      const sessionToken = Random.secret();
+      const signingSecret = random.secret();
+      const sessionToken = random.secret();
       const userArn = `arn:aws:sts::${accountId}:assumed-role/${kubeData.namespace}/${kubeData.serviceaccount.name}`;
-      const accessKeyId = await SessionsCollection.insertAsync({
+      const accessKeyId = await SessionsCollection.insertOne({
+        _id: random.id(),
         createdAt,
         expiresAt,
         accountId,
-        roleArn: RoleArn,
+        roleArn: RoleArn!,
         signingSecret,
         sessionToken,
         sessionName: RoleSessionName ?? 'none',
@@ -88,9 +87,10 @@ export async function handleStsAction(reqParams: URLSearchParams, accountId: str
         <Provider>www.amazon.com</Provider>
       </AssumeRoleWithWebIdentityResult></Result>`;
     }
-    throw new Meteor.Error(`InvalidIdentityToken`, `This is not a Kubernetes token!`);
+    throw new ServiceError(`InvalidIdentityToken`, `This is not a Kubernetes token!`);
+  }
 
   default:
-    throw new Meteor.Error(`Unimplemented`, `Unimplemented`);
+    throw new ServiceError(`Unimplemented`, `Unimplemented`);
   }
 }
