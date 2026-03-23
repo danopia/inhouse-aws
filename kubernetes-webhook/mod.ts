@@ -1,6 +1,15 @@
-import * as CoreV1 from "https://deno.land/x/kubernetes_apis@v0.3.1/builtin/core@v1/structs.ts";
-import { AdmissionServer } from "https://deno.land/x/kubernetes_admission@v0.1.0/mod.ts";
-import { watchFiles } from "https://deno.land/x/kubernetes_admission@v0.1.0/file-watcher.ts";
+#!/usr/bin/env -S deno run --watch --allow-net=[::]:8000,[::]:8443 --allow-env=WEBHOOK_TLS_DIRECTORY,INHOUSE_* --allow-read
+
+import * as CoreV1 from '@cloudydeno/kubernetes-apis/core/v1';
+import { AdmissionServer } from '@cloudydeno/kubernetes-admission';
+
+const region = Deno.env.get(
+  'INHOUSE_REGION'
+) ?? 'us-east-1';
+const destIp = Deno.env.get(
+  Deno.env.get('INHOUSE_SERVICE_ENVVAR')
+    ?? 'INHOUSE_CLOUD_SERVICE_HOST'
+) ?? '127.0.0.1';
 
 const srv = new AdmissionServer({
   name: 'inhouse-aws-webhook',
@@ -14,50 +23,38 @@ const srv = new AdmissionServer({
   callback(ctx) {
     const pod = CoreV1.toPod(ctx.request.object);
 
-    ctx.log(`Adding inhouse-aws host alias to ${pod.metadata?.namespace}/${pod.metadata?.name}`);
+    ctx.log(`Adding inhouse-aws host aliases to ${pod.metadata?.namespace}/${pod.metadata?.name}`);
 
     // Add an empty list if there's none yet
     // (which will be the case probably almost always)
     if (!pod.spec?.hostAliases) {
       ctx.addPatch({
-        op: "add",
-        path: "/spec/hostAliases",
+        op: 'add',
+        path: '/spec/hostAliases',
         value: [],
       });
     }
 
     // Add an item to the list
     ctx.addPatch({
-      op: "add",
-      path: "/spec/hostAliases/-",
+      op: 'add',
+      path: '/spec/hostAliases/-',
       value: CoreV1.fromHostAlias({
-        ip: '10.4.43.152', // TODO: discover from cluster
+        ip: destIp,
         hostnames: [
-          'sqs.eu-west-1.amazonaws.com',
-          'sns.eu-west-1.amazonaws.com',
-          'sts.eu-west-1.amazonaws.com',
+          `sqs.${region}.amazonaws.com`,
+          `sns.${region}.amazonaws.com`,
+          `sts.${region}.amazonaws.com`,
         ],
       }),
     });
   },
 });
 
-srv.servePlaintext();
-
 const tlsDirectory = Deno.env.get('WEBHOOK_TLS_DIRECTORY');
-if (tlsDirectory) {
-  const certFile = `${tlsDirectory || '.'}/tls.crt`;
-  const keyFile = `${tlsDirectory || '.'}/tls.key`;
-  for await (const signal of watchFiles([certFile, keyFile])) {
-    console.log(`Serving @ https://[::]:${8443}/`);
-    await Deno.serve({
-      onError: srv.errorResponse.bind(srv),
-      signal,
-      port: 8443,
-      hostname: '[::]',
-      cert: await Deno.readTextFile(`${tlsDirectory || '.'}/tls.crt`),
-      key: await Deno.readTextFile(`${tlsDirectory || '.'}/tls.key`),
-    }, srv.handleRequest.bind(srv)).finished;
-    console.log(`HTTPS listener has finished.`);
-  }
-}
+await Promise.race([
+  srv.servePlaintext(),
+  tlsDirectory
+    ? srv.serveHttps(tlsDirectory)
+    : false,
+]);
